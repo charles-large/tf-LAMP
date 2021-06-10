@@ -26,7 +26,7 @@ resource "aws_subnet" "PublicSubnet" {
   cidr_block = "10.10.10.0/24"
   availability_zone = "us-east-1b"
   tags = {
-    "Name" = "Public Subnet"
+    "Name" = "PublicSubnet"
   }
 }
 
@@ -36,7 +36,7 @@ resource "aws_subnet" "PublicSubnet2" {
   availability_zone = "us-east-1a"
 
   tags = {
-    "Name" = "Public Subnet 2"
+    "Name" = "PublicSubnet2"
   }
 }
 
@@ -111,6 +111,15 @@ resource "aws_security_group" "SecurityGroup1" {
         to_port = ingress.value["to_port"]
     }
   }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
   tags = {
     Name = "PrivateSubnet"
   }
@@ -130,10 +139,42 @@ resource "aws_security_group" "SecurityGroup2" {
         to_port = ingress.value["to_port"]
     }
   }
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
   tags = {
     Name = "PublicSubnet"
   }
 
+}
+
+resource "aws_security_group" "ALBSecurityGroup" {
+  name = "ALBSecurityGroup"
+  description = "allows http traffic from internet to autoscaling target group"
+  vpc_id = aws_vpc.MainVPC.id
+  
+  ingress {
+    from_port        = 80
+    to_port          = 80
+    protocol         = "TCP"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  egress {
+    from_port        = 80
+    to_port          = 80
+    protocol         = "TCP"
+    security_groups = [aws_security_group.SecurityGroup2.id]
+  }
+
+  tags = {
+    Name = "ALBSecurityGroup"
+  }
 }
 
 resource "aws_eip" "ngEIP" {
@@ -221,7 +262,11 @@ resource "aws_launch_template" "launch_template" {
   instance_type = "t2.micro"
   key_name = "terraform_deploy"
   name_prefix = "ASG-"
-  vpc_security_group_ids = [aws_security_group.SecurityGroup2.id]
+  network_interfaces {
+    associate_public_ip_address = true
+    security_groups = [ aws_security_group.SecurityGroup2.id ]
+  }
+  # vpc_security_group_ids = [aws_security_group.SecurityGroup2.id]
   
   tag_specifications {
     resource_type = "instance"
@@ -233,15 +278,16 @@ resource "aws_launch_template" "launch_template" {
   user_data = "${base64encode(<<EOF
   #!/bin/bash
   sudo yum install httpd -y
-  sudo echo $hostname > /var/www/html/index.txt
+  sudo chown ec2-user:ec2-user /var/www/html
+  sudo echo $HOSTNAME > /var/www/html/index.html
   sudo systemctl start httpd
   EOF
   )}"
 }
 
 resource "aws_autoscaling_group" "asg" {
-  max_size = 5
-  min_size = 0
+  max_size = 2
+  min_size = 2
   desired_capacity = 2
   health_check_type = "ELB"
   health_check_grace_period = "360"
@@ -260,6 +306,7 @@ resource "aws_lb" "elb" {
   subnets = [aws_subnet.PublicSubnet.id, aws_subnet.PublicSubnet2.id]
   load_balancer_type = "application"
   internal = false
+  security_groups = [ aws_security_group.ALBSecurityGroup.id ]
   
 }
 
@@ -268,6 +315,11 @@ resource "aws_lb_target_group" "lb-tg"{
   port = 80
   protocol = "HTTP"
   vpc_id = aws_vpc.MainVPC.id
+  
+  health_check {
+    path = "/index.html"
+  }
+
 
 }
 
